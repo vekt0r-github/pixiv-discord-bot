@@ -56,7 +56,7 @@ client.on("messageCreate", async function (message) {
       url: `https://www.pixiv.net/users/${illustData.userId}`,
     })
     .setTitle(illustData.title)
-    .setDescription(illustData.description)
+    .setDescription(illustData.description.replace(/<[^>]+>/g, ''))
     .setThumbnail('attachment://thumbnail.jpg')
     .setImage('attachment://image.jpg')
     .setFooter({
