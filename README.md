@@ -12,6 +12,10 @@ send messages, manage messages, read message history (75776); you should give bo
 
 run `node index.js` on the machine you want to host the bot on
 
+- `nohup node index.js`
+- ^Z then `bg`
+- `tail -f nohup.out` to view logs
+
 ## resources
 - https://github.com/Lachee/pixiv-bot
 - https://blog.howlingmoon.dev/posts/How-request-header-can-give-you-access-to-Pixiv-resources-externally

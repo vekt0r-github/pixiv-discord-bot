@@ -2,8 +2,10 @@ const axios = require('axios');
 const dotenv = require('dotenv');
 dotenv.config();   // Load Enviroment
 
-const { Client, Intents, MessageAttachment, MessageEmbed, Constants } = require('discord.js');
-const client = new Client({ intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES] });
+const { Client, GatewayIntentBits, AttachmentBuilder, EmbedBuilder, Constants } = require('discord.js');
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+});
 
 const BUG_MSG = `bug vekt0r to check the logs`;
 
@@ -76,23 +78,28 @@ client.on("messageCreate", async function (message) {
 
   // compute discord bot message
   // note: trying multiple times to send messages here fails in weird ways
-  const imageAttachment = new MessageAttachment(image.data, `image-${size}.jpg`);
-  const thumbnailAttachment = isError(thumbnail) ? undefined : new MessageAttachment(thumbnail.data, `thumbnail-${size}.jpg`);
+  const imageFilename = `image-${size}.jpg`;
+  const imageAttachment = new AttachmentBuilder(image.data, { name: imageFilename});
+  let thumbnailFilename, thumbnailAttachment;
+  if (!isError(thumbnail)) {
+    thumbnailFilename = `thumbnail-${size}.jpg`
+    thumbnailAttachment = new AttachmentBuilder(thumbnail.data, { name: thumbnailFilename});
+  }
 
-  const imageEmbed = new MessageEmbed()
+  const imageEmbed = new EmbedBuilder()
     .setAuthor({
       name: illustData.userName,
       url: `https://www.pixiv.net/users/${illustData.userId}`,
     })
     .setTitle(illustData.title)
     .setDescription(illustData.description.replace(/<[^>]+>/g, ''))
-    .setImage(`attachment://image-${size}.jpg`)
+    .setImage(`attachment://${imageFilename}`)
     .setFooter({
       text: `pixiv ・ ${new Date(illustData.uploadDate).toDateString()}`
     });
   const files = [imageAttachment];
-  if (thumbnailAttachment) {
-    imageEmbed.setThumbnail(`attachment://thumbnail-${size}.jpg`);
+  if (thumbnailFilename) {
+    imageEmbed.setThumbnail(`attachment://${thumbnailFilename}`);
     files.push(thumbnailAttachment);
   }
   message.reply({
