@@ -91,17 +91,19 @@ client.on("messageCreate", async function (message) {
       name: illustData.userName,
       url: `https://www.pixiv.net/users/${illustData.userId}`,
     })
-    .setTitle(illustData.title)
-    .setDescription(illustData.description.replace(/<[^>]+>/g, ''))
     .setImage(`attachment://${imageFilename}`)
     .setFooter({
       text: `pixiv ・ ${new Date(illustData.uploadDate).toDateString()}`
     });
+  if (illustData.title) imageEmbed.setTitle(illustData.title);
+  const description = illustData.description.replace(/<[^>]+>/g, '');
+  if (description) imageEmbed.setDescription(description);
   const files = [imageAttachment];
   if (thumbnailFilename) {
     imageEmbed.setThumbnail(`attachment://${thumbnailFilename}`);
     files.push(thumbnailAttachment);
   }
+
   message.reply({
     content: pixivLink,
     embeds: [imageEmbed],
