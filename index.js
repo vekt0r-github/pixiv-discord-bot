@@ -2,7 +2,7 @@ const axios = require('axios');
 const dotenv = require('dotenv');
 dotenv.config();   // Load Enviroment
 
-const { Client, GatewayIntentBits, AttachmentBuilder, EmbedBuilder, Constants } = require('discord.js');
+const { Client, GatewayIntentBits, AttachmentBuilder, EmbedBuilder, RESTJSONErrorCodes } = require('discord.js');
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
@@ -24,69 +24,72 @@ const isError = (data) => {
   return data.error;
 }
 
-const getImage = (imageURL, referer) => { // async
-  return axios.get(imageURL, {
-    headers: { referer },
-    responseType: 'arraybuffer',
-    // maxContentLength: 7.5 * 1024 * 1024, 
-  });
+const getFileExtension = (filename) => {
+  return filename.split('.').pop();
 }
 
-client.on("messageCreate", async function (message) {
-  if (message.author.bot) return;
-  const pixivId = getId(message.content);
-  if (!pixivId) return;
-  const pixivLink = `https://www.pixiv.net/artworks/${pixivId}`;
-  console.log(`\nreceived valid request for ${pixivLink}`);
-  
-  // gather necessary data from pixiv
-  const illustResponse = await axios.get(`https://www.pixiv.net/ajax/illust/${pixivId}`, {});
-  if (isError(illustResponse.data)) return;
-  const illustData = illustResponse.data.body;
+const getImage = async (imageURL, referer, limit = 7.5 * 1024 * 1024) => {
+  let image;
+  if (imageURL) {
+    image = await axios.get(imageURL, {
+      headers: { referer },
+      responseType: 'arraybuffer',
+      // maxContentLength: 7.5 * 1024 * 1024, 
+    });
+  }
+  if (!image || isError(image)) {
+    console.warn(`failed to fetch image from ${imageURL}`);
+    return undefined;
+  }
+  const dataSize = image.data.length;
+  console.log(`successfully fetched image from ${imageURL} with ${dataSize} bytes`);
+  if (dataSize > limit) { // image too large (above 7.5mb)
+    console.log(`image was too big (${dataSize} > ${limit})`);
+    return undefined;
+  }
+  return image;
+}
 
-  const artistResponse = await axios.get(`https://www.pixiv.net/ajax/user/${illustData.userId}`, {});
-  if (isError(artistResponse.data)) return;
-  const artistData = artistResponse.data.body;
-  const thumbnail = await getImage(artistData.imageBig, pixivLink);
-  if (isError(thumbnail)) console.log(`failed to get artist thumbnail; continuing`);
+const getImageAttachment = async (imageURL, referer, identifier) => {
+  const image = await getImage(imageURL, referer);
+  if (!image) return undefined;
+  const filename = `${identifier}.${getFileExtension(imageURL)}`;
+  return new AttachmentBuilder(image.data, { name: filename });
+}
 
-  // get image-- original size may be too big; try downsizing until it works
+/**
+ * get image-- original size may be too big; try downsizing until it works
+ * @param {*} urls object with keys 'original', 'regular', 'small', etc.
+ * @param {*} pixivLink the referer to access images
+ * @param {*} pageNumber current index
+ * @param {*} logger to log progress with side effects
+ * @returns promise of imageAttachment or undefined if not found
+ */
+const findLargestPossibleImage = async (urls, pixivLink, pageNumber, logger) => {
+  logger.log(`fetching image for page ${pageNumber}...`)
   const possibleSizes = ['original', 'regular', 'small'];
-  let size, image;
-  for (size of possibleSizes) {
-    image = await getImage(illustData.urls[size], pixivLink);
-    if (isError(image)) {
-      console.log(`failed to get ${size} size image`);
+  for (const size of possibleSizes) {
+    const url = urls[size].replace("_p0", `_p${pageNumber}`); // hopefully this is the only instance
+    const imageAttachment = await getImageAttachment(url, pixivLink, `image-p${pageNumber}`);
+    if (!imageAttachment) {
+      logger.log(`failed to get ${size} size image`);
       continue;
     }
-    const dataSize = image.data.length;
-    console.log(`successfully got ${size} size image with ${dataSize} bytes`);
-    if (dataSize > 7.5 * 1024 * 1024) { // image too large (above 7.5mb)
-      console.log(`too big; continuing`);
-      image = undefined;
-    } else {
-      break;
-    }
+    logger.log(`successfully got ${size} size image`);
+    return imageAttachment;
   }
-  if (!image) {
-    console.log(`no images successfully found`);
-    message.reply({
-      content: `couldn't successfully get any images under 7.5MB\n${BUG_MSG}`,
-    });
-    return;
-  }
+  return undefined;
+}
 
-  // compute discord bot message
-  // note: trying multiple times to send messages here fails in weird ways
-  const imageFilename = `image-${size}.jpg`;
-  const imageAttachment = new AttachmentBuilder(image.data, { name: imageFilename});
-  let thumbnailFilename, thumbnailAttachment;
-  if (!isError(thumbnail)) {
-    thumbnailFilename = `thumbnail-${size}.jpg`
-    thumbnailAttachment = new AttachmentBuilder(thumbnail.data, { name: thumbnailFilename});
-  }
-
+/**
+ * generates a discord embed containing an image
+ * @param {*} imageFilename unique indentifier; not undefined
+ * @param {*} thumbnailFilename could be undefined
+ * @returns the discord embed
+ */
+const createEmbed = (illustData, imageFilename, thumbnailFilename) => {
   const imageEmbed = new EmbedBuilder()
+    .setURL('https://github.com/vekt0r-github/pixiv-discord-bot')
     .setAuthor({
       name: illustData.userName,
       url: `https://www.pixiv.net/users/${illustData.userId}`,
@@ -98,29 +101,89 @@ client.on("messageCreate", async function (message) {
   if (illustData.title) imageEmbed.setTitle(illustData.title);
   const description = illustData.description.replace(/<[^>]+>/g, '');
   if (description) imageEmbed.setDescription(description);
-  const files = [imageAttachment];
   if (thumbnailFilename) {
     imageEmbed.setThumbnail(`attachment://${thumbnailFilename}`);
-    files.push(thumbnailAttachment);
+  }
+  return imageEmbed;
+}
+
+client.on("messageCreate", async function (message) {
+  if (message.author.bot) return;
+  const pixivId = getId(message.content);
+  if (!pixivId) return;
+  
+  const errors = [];
+  const logMessage = await message.channel.send('logs:');
+  const logger = {
+    content: logMessage.content,
+    sendToLog(str) { this.content += '\n' + str; logMessage.edit(this.content); },
+    log(str) { console.log(str); this.sendToLog(str); },
+    warn(str) { console.warn(str); this.sendToLog(str); },
+    error(str) { console.error(str); this.sendToLog(str); errors.push(str); },
   }
 
+  const pixivLink = `https://www.pixiv.net/artworks/${pixivId}`;
+  logger.log(`\nreceived valid request for ${pixivLink}`);
+  logMessage.suppressEmbeds(true); // since this contains a link
+  
+  // gather necessary data from pixiv
+  const illustResponse = await axios.get(`https://www.pixiv.net/ajax/illust/${pixivId}`, {});
+  if (isError(illustResponse.data)) return;
+  const illustData = illustResponse.data.body;
+
+  const artistResponse = await axios.get(`https://www.pixiv.net/ajax/user/${illustData.userId}`, {});
+  if (isError(artistResponse.data)) return;
+  const artistData = artistResponse.data.body;
+
+  // create all embeds and attachments (including fetching images)  
+  const files = [];
+  const embeds = [];
+
+  const thumbnailAttachment = await getImageAttachment(artistData.imageBig, pixivLink, "thumbnail");
+  if (thumbnailAttachment) files.push(thumbnailAttachment);
+
+  let pageCount = parseInt(illustData.pageCount);
+  const MAX_PAGE_COUNT = 9;
+  if (!pageCount) {
+    logger.warn(`bad pageCount: ${illustData.pageCount}; defaulting to 1`);
+    pageCount = 1;
+  } else if (pageCount > MAX_PAGE_COUNT) {
+    const err = `warning: clipping number of images to ${MAX_PAGE_COUNT} (from ${pageCount})`;
+    logger.warn(err);
+    pageCount = MAX_PAGE_COUNT;
+  }
+  logger.log(`fetching images for ${pageCount} pages...`)
+  for (let page = 0; page < pageCount; page++) {
+    const imageAttachment = await findLargestPossibleImage(illustData.urls, pixivLink, page, logger);
+    if (!imageAttachment) {
+      const err = `no images under 7.5MB found for page ${page} of ${pageCount}`;
+      logger.error(err);
+      continue;
+    }
+    const imageEmbed = createEmbed(illustData, imageAttachment.name, thumbnailAttachment.name);
+    files.push(imageAttachment);
+    embeds.push(imageEmbed);
+  }
+
+  // compute discord bot message
+  let content = `${pixivLink} (${pageCount}${pageCount === MAX_PAGE_COUNT ? '+' : ''} images)`;
+  if (errors.length) {
+    errors.push(BUG_MSG);
+    content += '\n' + errors.join('\n');
+  }
   message.reply({
-    content: pixivLink,
-    embeds: [imageEmbed],
+    content: content,
+    embeds: embeds,
     files: files,
   }).then(() => {
-    console.log(`successfully sent message with ${size} size image`);
+    console.log(`successfully sent message with ${embeds.length} images`);
     message.suppressEmbeds(true);
-    finished = true;
+    logMessage.delete();
   }).catch((err) => {
-    if (err.code === Constants.APIErrors.REQUEST_ENTITY_TOO_LARGE) { // message over 8mb
-      console.log(`message is somehow still too large; ${BUG_MSG}`);
-    } else {
-      console.error(err);
-      message.reply({
-        content: `discord error (${err.code}): ${err.message}\n${BUG_MSG}`,
-      });
+    if (err.code === RESTJSONErrorCodes.RequestEntityTooLarge) { // message over 8mb
+      logger.warn(`message is somehow still too large`);
     }
+    logger.error(`discord error (${err.code}): ${err.message}\n${BUG_MSG}`);
   });
 });
 
