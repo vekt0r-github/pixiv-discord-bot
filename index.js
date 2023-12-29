@@ -117,9 +117,10 @@ client.on("messageCreate", async function (message) {
   const logger = {
     content: logMessage.content,
     sendToLog(str) { this.content += '\n' + str; logMessage.edit(this.content); },
-    log(str) { console.log(str); this.sendToLog(str); },
-    warn(str) { console.warn(str); this.sendToLog(str); },
-    error(str) { console.error(str); this.sendToLog(str); errors.push(str); },
+    date(str) { return `[${new Date().toISOString()}] ${str}`; },
+    log(str) { console.log(this.date(str)); this.sendToLog(str); },
+    warn(str) { console.warn(this.date(str)); this.sendToLog(str); },
+    error(str) { console.error(this.date(str)); this.sendToLog(str); errors.push(this.date(str)); },
   }
 
   const pixivLink = `https://www.pixiv.net/artworks/${pixivId}`;
