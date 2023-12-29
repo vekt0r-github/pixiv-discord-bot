@@ -8,6 +8,8 @@ const client = new Client({
 });
 
 const BUG_MSG = `bug vekt0r to check the logs`;
+const MAX_PAGE_COUNT = 9;
+const MAX_FILE_SIZE = 24; // megabytes (limit is 25mb but add bit of error)
 
 client.on('ready', () => {
   console.log(`Logged in...`);
@@ -28,13 +30,13 @@ const getFileExtension = (filename) => {
   return filename.split('.').pop();
 }
 
-const getImage = async (imageURL, referer, limit = 7.5 * 1024 * 1024) => {
+const getImage = async (imageURL, referer, limit = MAX_FILE_SIZE * 1024 * 1024) => {
   let image;
   if (imageURL) {
     image = await axios.get(imageURL, {
       headers: { referer },
       responseType: 'arraybuffer',
-      // maxContentLength: 7.5 * 1024 * 1024, 
+      // maxContentLength: MAX_FILE_SIZE * 1024 * 1024, 
     });
   }
   if (!image || isError(image)) {
@@ -43,7 +45,7 @@ const getImage = async (imageURL, referer, limit = 7.5 * 1024 * 1024) => {
   }
   const dataSize = image.data.length;
   console.log(`successfully fetched image from ${imageURL} with ${dataSize} bytes`);
-  if (dataSize > limit) { // image too large (above 7.5mb)
+  if (dataSize > limit) { // image too large (above max file size)
     console.log(`image was too big (${dataSize} > ${limit})`);
     return undefined;
   }
@@ -69,6 +71,7 @@ const findLargestPossibleImage = async (urls, pixivLink, pageNumber, logger) => 
   logger.log(`fetching image for page ${pageNumber}...`)
   const possibleSizes = ['original', 'regular', 'small'];
   for (const size of possibleSizes) {
+    if (!urls[size]) continue;
     const url = urls[size].replace("_p0", `_p${pageNumber}`); // hopefully this is the only instance
     const imageAttachment = await getImageAttachment(url, pixivLink, `image-p${pageNumber}`);
     if (!imageAttachment) {
@@ -144,7 +147,6 @@ client.on("messageCreate", async function (message) {
   if (thumbnailAttachment) files.push(thumbnailAttachment);
 
   let pageCount = parseInt(illustData.pageCount);
-  const MAX_PAGE_COUNT = 9;
   if (!pageCount) {
     logger.warn(`bad pageCount: ${illustData.pageCount}; defaulting to 1`);
     pageCount = 1;
@@ -157,7 +159,7 @@ client.on("messageCreate", async function (message) {
   for (let page = 0; page < pageCount; page++) {
     const imageAttachment = await findLargestPossibleImage(illustData.urls, pixivLink, page, logger);
     if (!imageAttachment) {
-      const err = `no images under 7.5MB found for page ${page} of ${pageCount}`;
+      const err = `no images under ${MAX_FILE_SIZE}MB found for page ${page + 1} of ${pageCount}`;
       logger.error(err);
       continue;
     }
@@ -181,7 +183,8 @@ client.on("messageCreate", async function (message) {
     message.suppressEmbeds(true);
     logMessage.delete();
   }).catch((err) => {
-    if (err.code === RESTJSONErrorCodes.RequestEntityTooLarge) { // message over 8mb
+    if (err.code === RESTJSONErrorCodes.RequestEntityTooLarge) {
+      // possible message is over limit when individual files aren't?
       logger.warn(`message is somehow still too large`);
     }
     logger.error(`discord error (${err.code}): ${err.message}\n${BUG_MSG}`);
