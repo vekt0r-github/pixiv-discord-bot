@@ -16,9 +16,24 @@ client.on('ready', () => {
 });
 
 const getId = s => {
-  const match = s.match(/^!nya.*pixiv.net\/[^ ]*\/?artworks\/([0-9]+)/);
+  const match = s.match(/pixiv.net\/[^ ]*\/?artworks\/([0-9]+)/);
   if (!match || !/[0-9]+/.test(match[1])) { return; }
   return match[1];
+}
+
+const parseArgs = msg => {
+  const args = msg.split(' ');
+  let options = {};
+  if (args[0] !== '!nya') return options;
+  for (let i = 0; i < args.length; i++) {
+    const testId = getId(args[i]);
+    if (testId) options.id = testId;
+    else if (args[i].includes('=')) {
+      const [key, value] = args[i].split('=');
+      options[key] = value;
+    }
+  }
+  return options;
 }
 
 const isError = (data) => {
@@ -63,12 +78,12 @@ const getImageAttachment = async (imageURL, referer, identifier) => {
  * get image-- original size may be too big; try downsizing until it works
  * @param {*} urls object with keys 'original', 'regular', 'small', etc.
  * @param {*} pixivLink the referer to access images
- * @param {*} pageNumber current index
+ * @param {*} pageNumber current index; *zero indexed*
  * @param {*} logger to log progress with side effects
  * @returns promise of imageAttachment or undefined if not found
  */
 const findLargestPossibleImage = async (urls, pixivLink, pageNumber, logger) => {
-  logger.log(`fetching image for page ${pageNumber}...`)
+  logger.log(`fetching image for page ${pageNumber + 1}...`)
   const possibleSizes = ['original', 'regular', 'small'];
   for (const size of possibleSizes) {
     if (!urls[size]) continue;
@@ -112,8 +127,11 @@ const createEmbed = (illustData, imageFilename, thumbnailFilename) => {
 
 client.on("messageCreate", async function (message) {
   if (message.author.bot) return;
-  const pixivId = getId(message.content);
+  const options = parseArgs(message.content);
+  const pixivId = options.id;
   if (!pixivId) return;
+  const selectedPagesArg = options.pages ?? options.page ?? '';
+  let selectedPages = selectedPagesArg.split(',').map(s => parseInt(s)).filter(x => !isNaN(x) && x > 0);
   
   const errors = [];
   const logMessage = await message.channel.send('logs:');
@@ -150,17 +168,33 @@ client.on("messageCreate", async function (message) {
   if (!pageCount) {
     logger.warn(`bad pageCount: ${illustData.pageCount}; defaulting to 1`);
     pageCount = 1;
-  } else if (pageCount > MAX_PAGE_COUNT) {
-    const err = `warning: clipping number of images to ${MAX_PAGE_COUNT} (from ${pageCount})`;
-    logger.warn(err);
-    pageCount = MAX_PAGE_COUNT;
   }
-  logger.log(`fetching images for ${pageCount} pages...`)
-  for (let page = 0; page < pageCount; page++) {
-    const imageAttachment = await findLargestPossibleImage(illustData.urls, pixivLink, page, logger);
+  if (selectedPages.length > 0) {
+    // get specific pages
+    if (selectedPages.length > MAX_PAGE_COUNT) {
+      logger.warn(`warning: clipping number of images to ${MAX_PAGE_COUNT} (attempted to pass in ${selectedPages.length})`);
+      selectedPages.splice(MAX_PAGE_COUNT);
+    }
+    for (const selectedPage of selectedPages) {
+      if (selectedPage >= pageCount) {
+        logger.warn(`warning: requested page (${selectedPage}) is greater than page count (${pageCount}); this image will likely fail`);
+      }
+    }
+    logger.log(`fetching images for these pages: ${selectedPages.join(', ')}...`)
+  } else {
+    // get all pages
+    if (pageCount > MAX_PAGE_COUNT) {
+      logger.warn(`warning: clipping number of images to ${MAX_PAGE_COUNT} (from ${pageCount})`);
+      pageCount = MAX_PAGE_COUNT;
+    }
+    logger.log(`fetching images for ${pageCount} pages...`)
+    selectedPages = [...new Array(pageCount).keys()].map(x => x + 1);
+  }
+
+  for (const page of selectedPages) {
+    const imageAttachment = await findLargestPossibleImage(illustData.urls, pixivLink, page - 1, logger);
     if (!imageAttachment) {
-      const err = `no images under ${MAX_FILE_SIZE}MB found for page ${page + 1} of ${pageCount}`;
-      logger.error(err);
+      logger.error(`no images under ${MAX_FILE_SIZE}MB found for page ${page} of ${pageCount}`);
       continue;
     }
     const imageEmbed = createEmbed(illustData, imageAttachment.name, thumbnailAttachment.name);
@@ -169,7 +203,7 @@ client.on("messageCreate", async function (message) {
   }
 
   // compute discord bot message
-  let content = `${pixivLink} (${pageCount}${pageCount === MAX_PAGE_COUNT ? '+' : ''} images)`;
+  let content = `${pixivLink} (${selectedPages.length} images)`;
   if (errors.length) {
     errors.push(BUG_MSG);
     content += '\n' + errors.join('\n');
